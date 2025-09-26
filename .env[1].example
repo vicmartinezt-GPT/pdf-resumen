@@ -1,0 +1,3 @@
+# Copia este archivo a .env y pega tu clave:
+# OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+# (En Streamlit Cloud NO uses .env; agrega el secreto en la consola de Streamlit)
