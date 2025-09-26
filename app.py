@@ -63,15 +63,67 @@ DEFAULT_SECTIONS = [
 
 # ============================= Motores de resumen =============================
 def summarize_demo_extractive(text: str, sentences: int = 8) -> str:
-    """Resumen extractivo (sin API) con TextRank."""
-    text = text.strip()
-    if not text:
-        return ""
-    parser = PlaintextParser.from_string(text, Tokenizer("spanish"))
-    summarizer = TextRankSummarizer()
-    sents = summarizer(parser.document, sentences)
-    out = "• " + "\n• ".join(str(s) for s in sents)
-    return out
+    """Resumen extractivo (sin API) con tolerancia a fallos.
+    1) Intenta usar Sumy + NLTK (TextRank).
+    2) Si falla, usa un respaldo simple por oraciones.
+    """
+    try:
+        # Capar longitud para evitar caídas con textos enormes
+        text = (text or "").strip()
+        if not text:
+            return ""
+        if len(text) > 20000:
+            text = text[:20000]
+
+        # Intento 1: Sumy + NLTK (TextRank)
+        try:
+            from sumy.parsers.plaintext import PlaintextParser
+            from sumy.nlp.tokenizers import Tokenizer
+            from sumy.summarizers.text_rank import TextRankSummarizer
+            import nltk
+            try:
+                nltk.data.find("tokenizers/punkt")
+            except LookupError:
+                nltk.download("punkt", quiet=True)
+
+            parser = PlaintextParser.from_string(text, Tokenizer("spanish"))
+            summarizer = TextRankSummarizer()
+            sents = summarizer(parser.document, sentences)
+            out = [str(s) for s in sents if str(s).strip()]
+            if out:
+                return "• " + "\n• ".join(out)
+        except Exception:
+            pass
+
+        # Respaldo: segmentar por oraciones y puntuar
+        import re
+        # Separar por punto/salto de línea
+        raw_sents = re.split(r"(?<=[.!?])\s+|\n+", text)
+        # Limpieza básica
+        sents = [s.strip() for s in raw_sents if len(s.strip()) > 0]
+
+        if not sents:
+            return ""
+
+        # Puntuar: preferir oraciones con números, %, mayúsculas iniciales, o palabras clave
+        keywords = ("alerta", "afectación", "impacto", "personas", "daños",
+                    "declaración", "nivel", "recomendación", "curso de acción",
+                    "evento", "riesgo", "región", "comuna", "provincia", "reporte")
+        def score(sent: str) -> int:
+            sc = 0
+            if re.search(r"\d", sent): sc += 2
+            if "%" in sent: sc += 2
+            if any(k in sent.lower() for k in keywords): sc += 3
+            if len(sent) > 80: sc += 1  # algo de preferencia por oraciones más informativas
+            return sc
+
+        ranked = sorted(sents, key=score, reverse=True)[:max(3, sentences)]
+        return "• " + "\n• ".join(ranked)
+
+    except Exception as e:
+        # Último recurso: devolver primeros N fragmentos
+        short = text[:1200]
+        return "• " + "\n• ".join([s.strip() for s in short.split("\n") if s.strip()][:sentences])
 
 def summarize_hf_bart(text: str, hf_token: str, max_len: int = 300) -> str:
     """Resumen con Hugging Face Inference API (requiere token gratuito)."""
@@ -119,8 +171,8 @@ with st.sidebar:
     # Modelos solo para OpenAI (si algún día lo activas)
     model = st.text_input("Modelo (solo OpenAI)", value=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     temperature = st.slider("Temperature (solo OpenAI)", 0.0, 1.0, 0.2, 0.05)
-    max_chars = st.number_input("Tamaño de trozo (chars)", min_value=2000, max_value=12000, value=7000, step=500)
-    overlap = st.number_input("Solapamiento (chars)", min_value=0, max_value=2000, value=500, step=50)
+    max_chars = st.number_input("Tamaño de trozo (chars)", min_value=1000, max_value=12000, value=4000, step=500)
+    overlap = st.number_input("Solapamiento (chars)", min_value=0, max_value=2000, value=200, step=50)
 
     st.divider()
     st.caption("Define objetivo y secciones del resumen")
