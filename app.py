@@ -1,18 +1,20 @@
-import os
-import io
-from typing import List, Dict, Any
-
+# ========= HOTFIX: mostrar cualquier error y añadir diagnóstico =========
 import streamlit as st
-from dotenv import load_dotenv
-from pypdf import PdfReader
-from openai import OpenAI
+st.set_page_config(page_title="PDF -> Resumen configurable", page_icon="📄", layout="wide")
 
-load_dotenv()
+try:
+    import os, io
+    from typing import List, Dict, Any
+    from dotenv import load_dotenv
+    from pypdf import PdfReader
+    from openai import OpenAI
+    load_dotenv()
+except Exception as e:
+    st.error("❌ Fallo al importar dependencias. Revisa requirements.txt o conexión.")
+    st.exception(e)
+    st.stop()
 
-# =============================
-# Funciones auxiliares
-# =============================
-
+# ============================= Funciones auxiliares =============================
 def extract_text_from_pdf(data: bytes) -> str:
     """Extrae texto de un PDF en memoria (bytes)."""
     reader = PdfReader(io.BytesIO(data))
@@ -38,15 +40,11 @@ def chunk_text(text: str, max_chars: int = 7000, overlap: int = 500) -> List[str
             start = 0
     return chunks
 
-# =============================
-# Configuración de resumen
-# =============================
-
+# ============================= Config de resumen =============================
 DEFAULT_OBJECTIVE = (
     "Generar un resumen ejecutivo claro y estructurado del documento, "
     "enfocado en decisiones y hallazgos clave."
 )
-
 DEFAULT_SECTIONS = [
     {"id": "titulo", "label": "Título Principal",
      "instruction": "Encabeza con la acción principal o idea-fuerza del documento.", "required": True},
@@ -68,28 +66,22 @@ AGGREGATION_SYSTEM_PROMPT = (
     "(por trozos) y debes consolidarlos en un único resumen final coherente, sin "
     "repeticiones, manteniendo trazabilidad ligera a páginas cuando sea posible."
 )
-
 CHUNK_SYSTEM_PROMPT = (
     "Eres un analista experto. Resume el contenido del trozo dado en relación con el objetivo y las secciones definidas. "
     "Respeta las reglas de omitir secciones cuando no haya evidencia. No inventes información."
 )
 
-# =============================
-# Funciones LLM
-# =============================
-
+# ============================= Funciones LLM =============================
 def call_llm(client: OpenAI, model: str, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
     resp = client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        messages=[{"role": "system", "content": system_prompt},
+                  {"role": "user", "content": user_prompt}],
         temperature=temperature,
     )
     return resp.choices[0].message.content.strip()
 
-def build_chunk_user_prompt(objetivo: str, secciones: List[Dict[str, Any]], chunk: str, idx: int, total: int) -> str:
+def build_chunk_user_prompt(objetivo: str, secciones, chunk: str, idx: int, total: int) -> str:
     template = [f"OBJETIVO: {objetivo}", "SECCIONES (con reglas):"]
     for s in secciones:
         rule = " [OMITIR SI VACÍO]" if s.get("omit_if_empty") else (" [REQUERIDA]" if s.get("required") else "")
@@ -102,7 +94,7 @@ def build_chunk_user_prompt(objetivo: str, secciones: List[Dict[str, Any]], chun
                     "Incluye solo secciones con contenido; si una sección no aplica o está vacía, omítela del JSON.")
     return "\n".join(template)
 
-def build_aggregation_user_prompt(objetivo: str, secciones: List[Dict[str, Any]], partial_json_list: List[str]) -> str:
+def build_aggregation_user_prompt(objetivo: str, secciones, partial_json_list) -> str:
     template = [f"OBJETIVO: {objetivo}", "SECCIONES TOTALES (estructura final):"]
     for s in secciones:
         rule = " [OMITIR SI VACÍO]" if s.get("omit_if_empty") else (" [REQUERIDA]" if s.get("required") else "")
@@ -116,15 +108,12 @@ def build_aggregation_user_prompt(objetivo: str, secciones: List[Dict[str, Any]]
     template.append("DEVUELVE SOLO UN JSON FINAL con las claves de sección y valores textuales (Markdown permitido).")
     return "\n".join(template)
 
-# =============================
-# UI Streamlit
-# =============================
-
-st.set_page_config(page_title="PDF -> Resumen configurable", page_icon="📄", layout="wide")
+# ============================= UI =============================
 st.title("📄 PDF → Resumen configurable")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
+    # Fallback a modelos alternativos si el predeterminado no está habilitado en tu cuenta
     model = st.text_input("Modelo (chat.completions)", value=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
     temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
     max_chars = st.number_input("Tamaño de trozo (chars)", min_value=2000, max_value=12000, value=7000, step=500)
@@ -135,7 +124,7 @@ with st.sidebar:
     objetivo = st.text_area("Objetivo del resumen", value=DEFAULT_OBJECTIVE, height=80)
 
     st.subheader("Secciones")
-    edited_sections: List[Dict[str, Any]] = []
+    edited_sections = []
     for s in DEFAULT_SECTIONS:
         col1, col2, col3 = st.columns([2, 1, 1])
         with col1:
@@ -146,23 +135,42 @@ with st.sidebar:
         with col3:
             omit_if_empty = st.checkbox("Omitir si vacío", value=s.get("omit_if_empty", False), key=f"omit_{s['id']}")
         edited_sections.append({
-            "id": s["id"],
-            "label": label,
-            "instruction": instruction,
-            "required": required,
-            "omit_if_empty": omit_if_empty,
+            "id": s["id"], "label": label, "instruction": instruction,
+            "required": required, "omit_if_empty": omit_if_empty,
         })
 
     st.divider()
-    st.caption("Claves de API")
+    st.caption("Clave API")
     api_key = st.secrets.get("OPENAI_API_KEY", "") or st.text_input(
         "OPENAI_API_KEY", type="password", value=os.getenv("OPENAI_API_KEY", "")
     )
 
-# =============================
-# Procesamiento principal
-# =============================
+# ---------- Panel de diagnóstico ----------
+with st.expander("🔎 Diagnóstico rápido", expanded=False):
+    st.write("**Variables detectadas:**")
+    st.write({
+        "api_key_configurada": bool(api_key),
+        "longitud_api_key": len(api_key) if api_key else 0,
+        "modelo": model,
+    })
+    if st.button("🧪 Probar conexión OpenAI"):
+        try:
+            if not api_key:
+                st.error("No hay OPENAI_API_KEY configurada.")
+            else:
+                client = OpenAI(api_key=api_key)
+                test = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "Di 'ok' si me recibes"}],
+                    temperature=0.0,
+                )
+                st.success("Conexión OK ✅")
+                st.code(test.choices[0].message.content, language="text")
+        except Exception as e:
+            st.error("❌ Falló la prueba de conexión. Revisa el mensaje:")
+            st.exception(e)
 
+# ============================= Flujo principal =============================
 uploaded = st.file_uploader("Sube un PDF", type=["pdf"])
 
 if uploaded is not None and api_key:
@@ -189,15 +197,12 @@ if uploaded is not None and api_key:
 
                 st.subheader("Resumen final (JSON)")
                 st.code(final_json, language="json")
+                st.download_button("💾 Descargar JSON", "resumen.json", "application/json", final_json.encode("utf-8"))
 
-                st.download_button(
-                    label="💾 Descargar JSON",
-                    file_name="resumen.json",
-                    mime="application/json",
-                    data=final_json.encode("utf-8"),
-                )
     except Exception as e:
-        st.error("Se produjo un error al procesar el PDF o generar el resumen.")
+        st.error("❌ Error durante el procesamiento del PDF o la llamada al modelo.")
         st.exception(e)
-else:
-    st.warning("Sube un PDF y define tu OPENAI_API_KEY en la barra lateral para comenzar.")
+elif uploaded is None:
+    st.warning("Sube un PDF para comenzar.")
+elif not api_key:
+    st.warning("Configura tu OPENAI_API_KEY en Secrets o en la barra lateral.")
