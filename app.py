@@ -1,5 +1,5 @@
 import os
-import math
+import io
 from typing import List, Dict, Any
 
 import streamlit as st
@@ -9,8 +9,13 @@ from openai import OpenAI
 
 load_dotenv()
 
-def extract_text_from_pdf(file) -> str:
-    reader = PdfReader(file)
+# =============================
+# Funciones auxiliares
+# =============================
+
+def extract_text_from_pdf(data: bytes) -> str:
+    """Extrae texto de un PDF en memoria (bytes)."""
+    reader = PdfReader(io.BytesIO(data))
     pages_text = []
     for page in reader.pages:
         try:
@@ -20,6 +25,7 @@ def extract_text_from_pdf(file) -> str:
     return "\n\n".join(pages_text)
 
 def chunk_text(text: str, max_chars: int = 7000, overlap: int = 500) -> List[str]:
+    """Divide el texto en trozos con solapamiento."""
     chunks = []
     start = 0
     n = len(text)
@@ -32,52 +38,29 @@ def chunk_text(text: str, max_chars: int = 7000, overlap: int = 500) -> List[str
             start = 0
     return chunks
 
+# =============================
+# Configuración de resumen
+# =============================
+
 DEFAULT_OBJECTIVE = (
     "Generar un resumen ejecutivo claro y estructurado del documento, "
     "enfocado en decisiones y hallazgos clave."
 )
 
 DEFAULT_SECTIONS = [
-    {
-        "id": "titulo",
-        "label": "Título Principal",
-        "instruction": "Encabeza con la acción principal o idea-fuerza del documento.",
-        "required": True,
-    },
-    {
-        "id": "contexto",
-        "label": "Contexto",
-        "instruction": "Explica brevemente el contexto, alcance y propósito.",
-        "required": True,
-    },
-    {
-        "id": "hallazgos",
-        "label": "Hallazgos/Conclusiones",
-        "instruction": "Enumera los hallazgos clave y sus implicancias.",
-        "required": True,
-    },
-    {
-        "id": "afectacion",
-        "label": "Afectación/Impacto (omitir si no aplica)",
-        "instruction": (
-            "Solo incluir si el documento contiene datos claros de afectación/impacto; "
-            "si no hay evidencia, omitir por completo esta sección."
-        ),
-        "required": False,
-        "omit_if_empty": True,
-    },
-    {
-        "id": "recomendaciones",
-        "label": "Recomendaciones/Cursos de acción",
-        "instruction": "Lista recomendaciones accionables priorizadas (si existen).",
-        "required": False,
-    },
-    {
-        "id": "fuentes",
-        "label": "Fuentes/Referencias (opcional)",
-        "instruction": "Cita brevemente secciones/páginas relevantes del PDF.",
-        "required": False,
-    },
+    {"id": "titulo", "label": "Título Principal",
+     "instruction": "Encabeza con la acción principal o idea-fuerza del documento.", "required": True},
+    {"id": "contexto", "label": "Contexto",
+     "instruction": "Explica brevemente el contexto, alcance y propósito.", "required": True},
+    {"id": "hallazgos", "label": "Hallazgos/Conclusiones",
+     "instruction": "Enumera los hallazgos clave y sus implicancias.", "required": True},
+    {"id": "afectacion", "label": "Afectación/Impacto (omitir si no aplica)",
+     "instruction": "Solo incluir si el documento contiene datos claros de afectación/impacto; si no hay evidencia, omitir por completo esta sección.",
+     "required": False, "omit_if_empty": True},
+    {"id": "recomendaciones", "label": "Recomendaciones/Cursos de acción",
+     "instruction": "Lista recomendaciones accionables priorizadas (si existen).", "required": False},
+    {"id": "fuentes", "label": "Fuentes/Referencias (opcional)",
+     "instruction": "Cita brevemente secciones/páginas relevantes del PDF.", "required": False},
 ]
 
 AGGREGATION_SYSTEM_PROMPT = (
@@ -91,6 +74,10 @@ CHUNK_SYSTEM_PROMPT = (
     "Respeta las reglas de omitir secciones cuando no haya evidencia. No inventes información."
 )
 
+# =============================
+# Funciones LLM
+# =============================
+
 def call_llm(client: OpenAI, model: str, system_prompt: str, user_prompt: str, temperature: float = 0.2) -> str:
     resp = client.chat.completions.create(
         model=model,
@@ -103,10 +90,7 @@ def call_llm(client: OpenAI, model: str, system_prompt: str, user_prompt: str, t
     return resp.choices[0].message.content.strip()
 
 def build_chunk_user_prompt(objetivo: str, secciones: List[Dict[str, Any]], chunk: str, idx: int, total: int) -> str:
-    template = [
-        f"OBJETIVO: {objetivo}",
-        "SECCIONES (con reglas):",
-    ]
+    template = [f"OBJETIVO: {objetivo}", "SECCIONES (con reglas):"]
     for s in secciones:
         rule = " [OMITIR SI VACÍO]" if s.get("omit_if_empty") else (" [REQUERIDA]" if s.get("required") else "")
         template.append(f"- {s['label']}: {s['instruction']}{rule}")
@@ -119,10 +103,7 @@ def build_chunk_user_prompt(objetivo: str, secciones: List[Dict[str, Any]], chun
     return "\n".join(template)
 
 def build_aggregation_user_prompt(objetivo: str, secciones: List[Dict[str, Any]], partial_json_list: List[str]) -> str:
-    template = [
-        f"OBJETIVO: {objetivo}",
-        "SECCIONES TOTALES (estructura final):",
-    ]
+    template = [f"OBJETIVO: {objetivo}", "SECCIONES TOTALES (estructura final):"]
     for s in secciones:
         rule = " [OMITIR SI VACÍO]" if s.get("omit_if_empty") else (" [REQUERIDA]" if s.get("required") else "")
         template.append(f"- {s['id']}: {s['label']} — {rule}")
@@ -134,6 +115,10 @@ def build_aggregation_user_prompt(objetivo: str, secciones: List[Dict[str, Any]]
     template.append("")
     template.append("DEVUELVE SOLO UN JSON FINAL con las claves de sección y valores textuales (Markdown permitido).")
     return "\n".join(template)
+
+# =============================
+# UI Streamlit
+# =============================
 
 st.set_page_config(page_title="PDF -> Resumen configurable", page_icon="📄", layout="wide")
 st.title("📄 PDF → Resumen configurable")
@@ -170,37 +155,49 @@ with st.sidebar:
 
     st.divider()
     st.caption("Claves de API")
-    api_key = st.text_input("OPENAI_API_KEY", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    api_key = st.secrets.get("OPENAI_API_KEY", "") or st.text_input(
+        "OPENAI_API_KEY", type="password", value=os.getenv("OPENAI_API_KEY", "")
+    )
 
-uploaded = st.file_uploader("Sube un PDF", type=["pdf"]) 
+# =============================
+# Procesamiento principal
+# =============================
+
+uploaded = st.file_uploader("Sube un PDF", type=["pdf"])
 
 if uploaded is not None and api_key:
-    text = extract_text_from_pdf(uploaded)
-    st.info(f"Páginas detectadas: {len(PdfReader(uploaded).pages)} | Longitud texto: {len(text)} chars")
+    try:
+        data = uploaded.getvalue()
+        reader = PdfReader(io.BytesIO(data))
+        text = extract_text_from_pdf(data)
+        st.info(f"Páginas detectadas: {len(reader.pages)} | Longitud texto: {len(text)} chars")
 
-    if st.button("▶️ Generar resumen"):
-        with st.spinner("Procesando…"):
-            chunks = chunk_text(text, max_chars=max_chars, overlap=overlap)
-            client = OpenAI(api_key=api_key)
+        if st.button("▶️ Generar resumen"):
+            with st.spinner("Procesando…"):
+                chunks = chunk_text(text, max_chars=max_chars, overlap=overlap)
+                client = OpenAI(api_key=api_key)
 
-            partials = []
-            for i, ch in enumerate(chunks):
-                uprompt = build_chunk_user_prompt(objetivo, edited_sections, ch, i, len(chunks))
-                out = call_llm(client, model, CHUNK_SYSTEM_PROMPT, uprompt)
-                partials.append(out)
-                st.write(f"Trozo {i+1}/{len(chunks)} procesado.")
+                partials = []
+                for i, ch in enumerate(chunks):
+                    uprompt = build_chunk_user_prompt(objetivo, edited_sections, ch, i, len(chunks))
+                    out = call_llm(client, model, CHUNK_SYSTEM_PROMPT, uprompt)
+                    partials.append(out)
+                    st.write(f"Trozo {i+1}/{len(chunks)} procesado.")
 
-            agg_prompt = build_aggregation_user_prompt(objetivo, edited_sections, partials)
-            final_json = call_llm(client, model, AGGREGATION_SYSTEM_PROMPT, agg_prompt)
+                agg_prompt = build_aggregation_user_prompt(objetivo, edited_sections, partials)
+                final_json = call_llm(client, model, AGGREGATION_SYSTEM_PROMPT, agg_prompt)
 
-            st.subheader("Resumen final (JSON)")
-            st.code(final_json, language="json")
+                st.subheader("Resumen final (JSON)")
+                st.code(final_json, language="json")
 
-            st.download_button(
-                label="💾 Descargar JSON",
-                file_name="resumen.json",
-                mime="application/json",
-                data=final_json.encode("utf-8"),
-            )
+                st.download_button(
+                    label="💾 Descargar JSON",
+                    file_name="resumen.json",
+                    mime="application/json",
+                    data=final_json.encode("utf-8"),
+                )
+    except Exception as e:
+        st.error("Se produjo un error al procesar el PDF o generar el resumen.")
+        st.exception(e)
 else:
     st.warning("Sube un PDF y define tu OPENAI_API_KEY en la barra lateral para comenzar.")
