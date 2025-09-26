@@ -158,7 +158,9 @@ with st.expander("🔎 Diagnóstico rápido", expanded=False):
             if not api_key:
                 st.error("No hay OPENAI_API_KEY configurada.")
             else:
-                client = OpenAI(api_key=api_key)
+                import os
+                os.environ["OPENAI_API_KEY"] = api_key
+                client = OpenAI()
                 test = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": "Di 'ok' si me recibes"}],
@@ -183,7 +185,9 @@ if uploaded is not None and api_key:
         if st.button("▶️ Generar resumen"):
             with st.spinner("Procesando…"):
                 chunks = chunk_text(text, max_chars=max_chars, overlap=overlap)
-                client = OpenAI(api_key=api_key)
+                import os
+                os.environ["OPENAI_API_KEY"] = api_key
+                client = OpenAI()
 
                 partials = []
                 for i, ch in enumerate(chunks):
